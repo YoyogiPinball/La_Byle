@@ -1,0 +1,6 @@
+# Claude Code ローカル設定
+.claude/
+
+# 自分用作業メモ・ドキュメント（Google Drive で管理）
+docs_ToMe/
+devnote.md
