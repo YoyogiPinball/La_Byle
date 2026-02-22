@@ -4,3 +4,28 @@
 # 自分用作業メモ・ドキュメント（Google Drive で管理）
 docs_ToMe/
 devnote.md
+
+# ログファイル
+logs/
+
+# Phase0 デモ（本番コードと混在させない）
+demo.py
+
+# ユーザー設定（初回起動時に自動生成）
+config.json
+
+# Python
+__pycache__/
+*.pyc
+
+# 仮想環境
+.venv/
+
+# PyInstaller ビルド成果物
+dist/
+build/
+*.exe
+*.spec
+
+# ビルドスクリプト（ローカル用）
+build.bat
