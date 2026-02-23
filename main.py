@@ -72,9 +72,9 @@ logger = _setup_logger()
 
 # ── 各モジュールをインポート ────────────────────────────────
 import config
-import wallpaper
 import startup
 from utils import resource_path
+from wallpaper import WallpaperWorker
 from scheduler import Scheduler
 from watcher import OrientationWatcher
 from tray import TrayIcon
@@ -106,6 +106,7 @@ class AppController:
     def __init__(self) -> None:
         self._cfg       = config.load()
         self._scheduler = Scheduler()
+        self._worker    = WallpaperWorker()
         self._watcher   = OrientationWatcher(on_change=self._on_orientation_change)
         self._window:   LaByleWindow | None = None
         self._tray:     TrayIcon     | None = None
@@ -119,6 +120,9 @@ class AppController:
         logger.info("La_Byle 起動")
         logger.info(f"横フォルダ: {self._cfg['landscape_folder']}")
         logger.info(f"縦フォルダ: {self._cfg['portrait_folder']}")
+
+        # 壁紙ワーカー（COM 専用スレッド）
+        self._worker.start()
 
         # GUI 生成
         self._window = LaByleWindow(
@@ -160,6 +164,9 @@ class AppController:
         config.save(cfg)
         logger.info("[Controller] 設定を保存")
 
+        # 画像キャッシュをクリア（フォルダーが変更された可能性があるため）
+        self._worker.invalidate_cache()
+
         # スタートアップ登録/解除
         try:
             if cfg.get("auto_start"):
@@ -184,6 +191,8 @@ class AppController:
         GUI「今すぐ適用」→ UIの現在値（cfg）で即時壁紙変更。
         保存は行わず、フォルダ内容は毎回必ず再読み込みする。
         """
+        # 手動変更時は常に最新のフォルダ内容を反映させるため、キャッシュを破棄
+        self._worker.invalidate_cache()
         self._apply_wallpaper(cfg=cfg)
 
     def _on_orientation_change(self) -> None:
@@ -194,22 +203,22 @@ class AppController:
     # ── 壁紙適用 ─────────────────────────────────────────────
 
     def _apply_wallpaper(self, cfg: dict = None) -> None:
-        """壁紙をランダム選択して適用し、結果をコンソール（--debug時）に出力する。"""
+        """壁紙ワーカーにリクエストを投入する。実際の適用は COM 専用スレッドで行われる。"""
         c    = cfg or self._cfg
         land = c.get("landscape_folder", "")
         port = c.get("portrait_folder",  "")
-        try:
-            results = wallpaper.apply_random(land, port)
-            for dev, path in results.items():
-                if path.startswith("[SKIP]"):
-                    logger.info(f"  SKIP {dev}: {path}")
-                elif path.startswith("["):
-                    logger.warning(f"  {dev} → {path}")
-                else:
-                    short = os.path.basename(path)
-                    logger.info(f"  {dev} → {short}")
-        except Exception as e:
-            logger.error(f"[Controller] 壁紙適用エラー: {e}")
+        self._worker.submit_apply(land, port, callback=self._log_results)
+
+    def _log_results(self, results: dict) -> None:
+        """壁紙適用結果をログに出力する（Worker スレッドから呼ばれる）。"""
+        for dev, path in results.items():
+            if path.startswith("[SKIP]"):
+                logger.info(f"  SKIP {dev}: {path}")
+            elif path.startswith("["):
+                logger.warning(f"  {dev} → {path}")
+            else:
+                short = os.path.basename(path)
+                logger.info(f"  {dev} → {short}")
 
     # ── シャットダウン ────────────────────────────────────────
 
@@ -218,6 +227,7 @@ class AppController:
         logger.info("[Controller] シャットダウン")
         self._scheduler.stop()
         self._watcher.stop()
+        self._worker.shutdown()
         if self._tray:
             self._tray.stop()
         if self._window:

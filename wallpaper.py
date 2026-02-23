@@ -7,15 +7,26 @@ wallpaper.py — IDesktopWallpaper COM API 経由での壁紙設定
   comtypes で GUID/IUnknown を継承してインターフェースを手動定義する。
   user32.SystemParametersInfoW では全モニター一括変更しかできないため、
   COM を使うことがモニター個別設定の唯一の正攻法。
+
+【パフォーマンス改善 2026-02-23】
+  - WallpaperWorker: 専用スレッドで COM を1回だけ初期化し再利用。
+    CoInitialize/CoUninitialize のペアリングを保証し、COMリソースリークを防止。
+  - _ImageCache: os.walk() の結果をキャッシュし、毎回のディレクトリ走査を廃止。
 """
 
 import ctypes
+import logging
 import os
+import queue
 import random
+import threading
+import time
 
 import comtypes
 import comtypes.client
 from comtypes import COMMETHOD, HRESULT
+
+logger = logging.getLogger("la_byle")
 
 # ── CLSID / IID ───────────────────────────────────────────────
 _CLSID = comtypes.GUID("{C2CF3110-460E-4fc1-B9D0-8A1C0C9CC4BD}")
@@ -49,42 +60,76 @@ class _IDesktopWallpaper(comtypes.IUnknown):
     ]
 
 
-def _create_idwp() -> _IDesktopWallpaper:
+# ── 画像一覧キャッシュ ────────────────────────────────────────
+class _ImageCache:
     """
-    COM オブジェクトを生成して返す。
-    スレッドごとに CoInitialize が必要なため明示的に呼ぶ。
+    フォルダーパスをキーに画像ファイル一覧をキャッシュする。
+    毎回 os.walk() するのを防ぎ、I/O を削減する。
+
+    キャッシュの寿命:
+      - 同じフォルダーパスが渡される限りキャッシュを返す
+      - invalidate() / invalidate_all() で明示的にクリア
+      - TTL（30分）経過で自動的に再スキャン
     """
-    comtypes.CoInitialize()
-    return comtypes.client.CreateObject(_CLSID, interface=_IDesktopWallpaper)
+
+    _TTL_SEC = 30 * 60  # 30分
+
+    def __init__(self) -> None:
+        self._store: dict[str, tuple[float, list[str]]] = {}
+
+    def get(self, folder: str) -> list[str]:
+        """folder 内の画像ファイル一覧を返す。キャッシュがあればそれを使う。"""
+        if not folder or not os.path.isdir(folder):
+            return []
+
+        now = time.monotonic()
+        if folder in self._store:
+            cached_at, files = self._store[folder]
+            if now - cached_at < self._TTL_SEC:
+                return files
+
+        # キャッシュミス → 走査
+        files = self._scan(folder)
+        self._store[folder] = (now, files)
+        logger.debug(f"[ImageCache] スキャン: {folder} → {len(files)}件")
+        return files
+
+    def invalidate(self, folder: str) -> None:
+        """特定フォルダーのキャッシュを破棄する。"""
+        self._store.pop(folder, None)
+
+    def invalidate_all(self) -> None:
+        """全キャッシュを破棄する（設定保存時に呼ぶ想定）。"""
+        self._store.clear()
+        logger.debug("[ImageCache] 全キャッシュクリア")
+
+    @staticmethod
+    def _scan(folder: str) -> list[str]:
+        """folder 内（サブフォルダー含む）の対応画像ファイル一覧を返す。"""
+        result = []
+        for root, _dirs, files in os.walk(folder):
+            for f in files:
+                if os.path.splitext(f)[1].lower() in _IMAGE_EXTS:
+                    result.append(os.path.join(root, f))
+        return result
 
 
-def _list_images(folder: str) -> list[str]:
-    """folder 内（サブフォルダー含む）の対応画像ファイル一覧を返す。"""
-    if not folder or not os.path.isdir(folder):
-        return []
-    result = []
-    for root, _dirs, files in os.walk(folder):
-        for f in files:
-            if os.path.splitext(f)[1].lower() in _IMAGE_EXTS:
-                result.append(os.path.join(root, f))
-    return result
+# ── 壁紙適用の内部ロジック ─────────────────────────────────────
 
-
-def apply_random(landscape_folder: str, portrait_folder: str) -> dict[str, str]:
+def _apply_random_impl(
+    dwp: _IDesktopWallpaper,
+    cache: _ImageCache,
+    landscape_folder: str,
+    portrait_folder: str,
+) -> dict[str, str]:
     """
     各モニターの向きに合ったフォルダからランダムに1枚選び壁紙を設定する。
 
     戻り値: { device_path: applied_file_path, ... }
     設定できなかったモニターはエラーメッセージを値として格納する。
-
-    【GetMonitorDevicePathAt について】
-      SetWallpaper の第1引数はデバイスパス文字列（例: \\?\DISPLAY#...）。
-      整数インデックスを直接渡せない仕様のため、
-      GetMonitorDevicePathAt(i) でパスを取得してから SetWallpaper に渡す。
     """
     from monitor import get_monitors
 
-    dwp = _create_idwp()
     monitors = get_monitors()
     results: dict[str, str] = {}
 
@@ -95,7 +140,7 @@ def apply_random(landscape_folder: str, portrait_folder: str) -> dict[str, str]:
                 landscape_folder if mon.orientation.startswith("横")
                 else portrait_folder
             )
-            images = _list_images(folder)
+            images = cache.get(folder)
             if not images:
                 results[device_path] = f"[SKIP] 画像なし: {folder}"
                 continue
@@ -112,7 +157,160 @@ def apply_random(landscape_folder: str, portrait_folder: str) -> dict[str, str]:
     return results
 
 
-def set_single(device_path: str, file_path: str) -> None:
-    """指定デバイスパスのモニターに指定ファイルを壁紙として設定する。"""
-    dwp = _create_idwp()
-    dwp.SetWallpaper(device_path, os.path.normpath(file_path))
+# ── 壁紙ワーカースレッド ───────────────────────────────────────
+
+# リクエスト種別
+_REQ_APPLY   = "apply"
+_REQ_SINGLE  = "single"
+_REQ_SHUTDOWN = "shutdown"
+_REQ_INVALIDATE_CACHE = "invalidate_cache"
+
+
+class WallpaperWorker:
+    """
+    壁紙適用処理を専用スレッドに集約するワーカー。
+
+    【設計意図】
+      COM (IDesktopWallpaper) はスレッドごとに CoInitialize() が必要で、
+      使い終わったら CoUninitialize() を呼ばないとリソースリークが起きる。
+      ワーカースレッドを1本立てて、その中だけで COM を使うことで
+      初期化/破棄を1回ずつに抑え、リークを完全に防止する。
+
+      「次へ」ボタンやスケジューラからのリクエストはキューに投入し、
+      ワーカーが順次処理する。最新のリクエストのみ保持する設計で、
+      連打時も最後の1回だけが実行される。
+    """
+
+    def __init__(self) -> None:
+        self._queue: queue.Queue = queue.Queue()
+        self._thread: threading.Thread | None = None
+        self._cache = _ImageCache()
+
+    def start(self) -> None:
+        """ワーカースレッドを開始する。"""
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        logger.info("[WallpaperWorker] 開始")
+
+    def shutdown(self) -> None:
+        """ワーカースレッドを停止する。"""
+        self._queue.put((_REQ_SHUTDOWN, None, None))
+        if self._thread is not None:
+            self._thread.join(timeout=5.0)
+        logger.info("[WallpaperWorker] 停止")
+
+    def submit_apply(
+        self,
+        landscape_folder: str,
+        portrait_folder: str,
+        callback=None,
+    ) -> None:
+        """
+        壁紙適用リクエストをキューに投入する。
+        キュー内に既存の apply リクエストがあれば破棄して最新のみ残す。
+        callback: 結果を受け取る関数 (results: dict) → None
+        """
+        # キューをドレインして未処理の apply リクエストを破棄（最新リクエスト優先）
+        # ※ queue.empty() はマルチスレッド下で信頼性が低いが、
+        #    直後の get_nowait() と queue.Empty 例外キャッチによって
+        #    安全にドレインできているため実用上の問題はない。
+        drained = []
+        while not self._queue.empty():
+            try:
+                item = self._queue.get_nowait()
+                if item[0] != _REQ_APPLY:
+                    drained.append(item)  # shutdown 等は保持
+            except queue.Empty:
+                break
+        for item in drained:
+            self._queue.put(item)
+
+        self._queue.put((
+            _REQ_APPLY,
+            (landscape_folder, portrait_folder),
+            callback,
+        ))
+
+    def submit_single(
+        self,
+        device_path: str,
+        file_path: str,
+    ) -> None:
+        """指定デバイスパスのモニターに壁紙を設定するリクエストを投入する。"""
+        self._queue.put((_REQ_SINGLE, (device_path, file_path), None))
+
+    def invalidate_cache(self) -> None:
+        """画像キャッシュを全クリアする（設定保存時に呼ぶ）。"""
+        self._queue.put((_REQ_INVALIDATE_CACHE, None, None))
+
+    # ── ワーカースレッド本体 ─────────────────────────────────
+
+    def _run(self) -> None:
+        """
+        ワーカースレッドのメインループ。
+        COM の初期化→ループ→破棄を1スレッド内で完結させる。
+        """
+        # ── COM 初期化（このスレッドで1回だけ） ──
+        comtypes.CoInitialize()
+        logger.debug("[WallpaperWorker] CoInitialize 完了")
+
+        dwp: _IDesktopWallpaper | None = None
+        try:
+            dwp = comtypes.client.CreateObject(
+                _CLSID, interface=_IDesktopWallpaper
+            )
+            logger.debug("[WallpaperWorker] IDesktopWallpaper 取得完了")
+
+            while True:
+                req_type, args, callback = self._queue.get()
+
+                if req_type == _REQ_SHUTDOWN:
+                    break
+
+                if req_type == _REQ_INVALIDATE_CACHE:
+                    self._cache.invalidate_all()
+                    continue
+
+                if req_type == _REQ_APPLY:
+                    land, port = args
+                    try:
+                        results = _apply_random_impl(
+                            dwp, self._cache, land, port
+                        )
+                        if callback:
+                            try:
+                                callback(results)
+                            except Exception as e:
+                                logger.error(
+                                    f"[WallpaperWorker] callback エラー: {e}"
+                                )
+                    except Exception as e:
+                        logger.error(
+                            f"[WallpaperWorker] 壁紙適用エラー: {e}"
+                        )
+
+                elif req_type == _REQ_SINGLE:
+                    device_path, file_path = args
+                    try:
+                        dwp.SetWallpaper(
+                            device_path, os.path.normpath(file_path)
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"[WallpaperWorker] 個別設定エラー: {e}"
+                        )
+
+        except Exception as e:
+            logger.error(f"[WallpaperWorker] 致命的エラー: {e}")
+        finally:
+            # ── COM オブジェクト解放 ──
+            if dwp is not None:
+                del dwp
+            # ── COM 終了化（CoInitialize とペアで必ず呼ぶ） ──
+            try:
+                comtypes.CoUninitialize()
+                logger.debug("[WallpaperWorker] CoUninitialize 完了")
+            except Exception:
+                pass
