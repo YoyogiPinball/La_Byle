@@ -25,10 +25,7 @@ __pycache__/
 dist/
 build/
 *.exe
-*.spec
 
 # ビルドスクリプト（ローカル用）
 build.bat
 
-# GitHub Actions（spec/exe が gitignore のため未整備）
-.github/
