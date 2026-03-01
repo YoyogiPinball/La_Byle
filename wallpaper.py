@@ -133,6 +133,7 @@ def _apply_random_impl(
     monitors = get_monitors()
     results: dict[str, str] = {}
 
+    t_total = time.perf_counter()
     for mon in monitors:
         try:
             device_path = dwp.GetMonitorDevicePathAt(mon.index)
@@ -145,7 +146,12 @@ def _apply_random_impl(
                 results[device_path] = f"[SKIP] 画像なし: {folder}"
                 continue
             chosen = random.choice(images)
+            t = time.perf_counter()
             dwp.SetWallpaper(device_path, os.path.normpath(chosen))
+            logger.debug(
+                f"[Wallpaper] SetWallpaper[{mon.index}] {time.perf_counter() - t:.3f}s"
+                f" → {os.path.basename(chosen)}"
+            )
             results[device_path] = chosen
         except comtypes.COMError as e:
             results[f"monitor[{mon.index}]"] = (
@@ -154,6 +160,7 @@ def _apply_random_impl(
         except Exception as e:
             results[f"monitor[{mon.index}]"] = f"[ERROR] {e}"
 
+    logger.debug(f"[Wallpaper] 全モニター合計: {time.perf_counter() - t_total:.3f}s")
     return results
 
 

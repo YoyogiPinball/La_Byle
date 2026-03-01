@@ -190,10 +190,16 @@ class AppController:
         """
         GUI「今すぐ適用」→ UIの現在値（cfg）で即時壁紙変更。
         保存は行わず、フォルダ内容は毎回必ず再読み込みする。
+        完了後にボタンを再有効化する。
         """
         # 手動変更時は常に最新のフォルダ内容を反映させるため、キャッシュを破棄
         self._worker.invalidate_cache()
-        self._apply_wallpaper(cfg=cfg)
+        if self._window:
+            def _re_enable():
+                self._window.root.after(0, self._window.set_apply_enabled, True)
+            self._apply_wallpaper(cfg=cfg, extra_callback=_re_enable)
+        else:
+            self._apply_wallpaper(cfg=cfg)
 
     def _on_orientation_change(self) -> None:
         """watcher から向き変化通知 → 即時壁紙変更。"""
@@ -202,12 +208,18 @@ class AppController:
 
     # ── 壁紙適用 ─────────────────────────────────────────────
 
-    def _apply_wallpaper(self, cfg: dict = None) -> None:
+    def _apply_wallpaper(self, cfg: dict = None, extra_callback=None) -> None:
         """壁紙ワーカーにリクエストを投入する。実際の適用は COM 専用スレッドで行われる。"""
         c    = cfg or self._cfg
         land = c.get("landscape_folder", "")
         port = c.get("portrait_folder",  "")
-        self._worker.submit_apply(land, port, callback=self._log_results)
+
+        def _combined(results):
+            self._log_results(results)
+            if extra_callback:
+                extra_callback()
+
+        self._worker.submit_apply(land, port, callback=_combined)
 
     def _log_results(self, results: dict) -> None:
         """壁紙適用結果をログに出力する（Worker スレッドから呼ばれる）。"""

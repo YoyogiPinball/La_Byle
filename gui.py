@@ -238,16 +238,21 @@ class LaByleWindow:
         row.pack(fill="x", padx=14, pady=(0, 6))
         
         # 左右のボタンがそれぞれ半分の領域（expand=True）を持ち、横幅いっぱいに広がるようにする
-        ctk.CTkButton(
+        self._apply_btn = ctk.CTkButton(
             row, text="▶  次へ", font=_f(13),
             command=self._apply_now, height=36
-        ).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        )
+        self._apply_btn.pack(side="left", expand=True, fill="x", padx=(0, 6))
         
         ctk.CTkButton(
             row, text="💾  保存", font=_f(13),
             command=self._save, height=36
         ).pack(side="left", expand=True, fill="x", padx=(6, 0))
 
+
+    def set_apply_enabled(self, enabled: bool) -> None:
+        """「次へ」ボタンの有効/無効を切り替える（処理中ロック用）。"""
+        self._apply_btn.configure(state="normal" if enabled else "disabled")
 
     # ── ロジック ─────────────────────────────────────────────
     def _browse(self, var: ctk.StringVar) -> None:
@@ -272,6 +277,7 @@ class LaByleWindow:
         }
 
     def _apply_now(self) -> None:
+        self.set_apply_enabled(False)   # 処理開始時に無効化
         self._on_apply_now(self._collect_cfg())
 
     def _save(self) -> None:
