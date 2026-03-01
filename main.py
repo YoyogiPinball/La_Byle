@@ -108,8 +108,9 @@ class AppController:
         self._scheduler = Scheduler()
         self._worker    = WallpaperWorker()
         self._watcher   = OrientationWatcher(on_change=self._on_orientation_change)
-        self._window:   LaByleWindow | None = None
-        self._tray:     TrayIcon     | None = None
+        self._window:         LaByleWindow | None = None
+        self._tray:           TrayIcon     | None = None
+        self._monitor_cursor: int = 0  # GUI「次へ」で担当するモニターのカーソル
 
     # ── 起動 ─────────────────────────────────────────────────
 
@@ -188,18 +189,25 @@ class AppController:
 
     def _on_apply_now(self, cfg: dict) -> None:
         """
-        GUI「今すぐ適用」→ UIの現在値（cfg）で即時壁紙変更。
-        保存は行わず、フォルダ内容は毎回必ず再読み込みする。
-        完了後にボタンを再有効化する。
+        GUI「次へ」→ カーソル位置のモニター1台をランダムに変更し、カーソルを進める。
+        保存は行わない。完了後にボタンを再有効化する。
         """
-        # 手動変更時は常に最新のフォルダ内容を反映させるため、キャッシュを破棄
-        self._worker.invalidate_cache()
+        from monitor import get_monitors
+        monitors = get_monitors()
+        if not monitors:
+            if self._window:
+                self._window.set_apply_enabled(True)
+            return
+        idx = self._monitor_cursor % len(monitors)
+        self._monitor_cursor += 1
+        land = cfg.get("landscape_folder", "")
+        port = cfg.get("portrait_folder",  "")
         if self._window:
-            def _re_enable():
+            def _re_enable(_results=None):
                 self._window.root.after(0, self._window.set_apply_enabled, True)
-            self._apply_wallpaper(cfg=cfg, extra_callback=_re_enable)
+            self._worker.submit_next_single(idx, land, port, callback=_re_enable)
         else:
-            self._apply_wallpaper(cfg=cfg)
+            self._worker.submit_next_single(idx, land, port)
 
     def _on_orientation_change(self) -> None:
         """watcher から向き変化通知 → 即時壁紙変更。"""
@@ -208,18 +216,21 @@ class AppController:
 
     # ── 壁紙適用 ─────────────────────────────────────────────
 
-    def _apply_wallpaper(self, cfg: dict = None, extra_callback=None) -> None:
-        """壁紙ワーカーにリクエストを投入する。実際の適用は COM 専用スレッドで行われる。"""
+    def _apply_wallpaper(self, cfg: dict = None) -> None:
+        """
+        カーソル位置のモニター1台をランダムに変更し、カーソルを進める。
+        スケジューラ・向き変化どちらから呼ばれても同じ挙動。
+        """
+        from monitor import get_monitors
+        monitors = get_monitors()
+        if not monitors:
+            return
         c    = cfg or self._cfg
+        idx  = self._monitor_cursor % len(monitors)
+        self._monitor_cursor += 1
         land = c.get("landscape_folder", "")
         port = c.get("portrait_folder",  "")
-
-        def _combined(results):
-            self._log_results(results)
-            if extra_callback:
-                extra_callback()
-
-        self._worker.submit_apply(land, port, callback=_combined)
+        self._worker.submit_next_single(idx, land, port, callback=self._log_results)
 
     def _log_results(self, results: dict) -> None:
         """壁紙適用結果をログに出力する（Worker スレッドから呼ばれる）。"""

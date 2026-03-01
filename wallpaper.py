@@ -114,16 +114,54 @@ class _ImageCache:
         return result
 
 
+# ── シーケンシャルカウンター ──────────────────────────────────
+
+class _WallpaperSequencer:
+    """
+    モニターごとに順番カウンターを管理する。
+
+    キー: monitor_index（フォルダではなく画面単位）
+    リセット条件: モニター台数 or 向きのいずれかが変化したとき
+    """
+
+    def __init__(self) -> None:
+        self._counters: dict[int, int] = {}  # monitor_index → next_idx
+        self._signature: str = ""            # "0:横,1:横,2:縦" 形式
+
+    def check_reset(self, monitors) -> None:
+        """モニター構成が変わっていたらカウンターを全リセットする。"""
+        sig = ",".join(
+            f"{m.index}:{m.orientation}"
+            for m in sorted(monitors, key=lambda m: m.index)
+        )
+        if sig != self._signature:
+            self._counters.clear()
+            self._signature = sig
+            logger.debug(f"[Sequencer] リセット: {sig}")
+
+    def next_image(self, monitor_index: int, images: list[str]) -> str:
+        """
+        images（ソート済み前提）から次の1枚を返しカウンターを進める。
+        images が空の場合は空文字列を返す。
+        """
+        if not images:
+            return ""
+        idx = self._counters.get(monitor_index, 0) % len(images)
+        self._counters[monitor_index] = idx + 1
+        return images[idx]
+
+
 # ── 壁紙適用の内部ロジック ─────────────────────────────────────
 
-def _apply_random_impl(
+def _apply_sequential_impl(
     dwp: _IDesktopWallpaper,
     cache: _ImageCache,
+    sequencer: _WallpaperSequencer,
     landscape_folder: str,
     portrait_folder: str,
 ) -> dict[str, str]:
     """
-    各モニターの向きに合ったフォルダからランダムに1枚選び壁紙を設定する。
+    全モニターに対して、各モニターのカウンター順で次の1枚を設定する。
 
     戻り値: { device_path: applied_file_path, ... }
     設定できなかったモニターはエラーメッセージを値として格納する。
@@ -131,6 +169,7 @@ def _apply_random_impl(
     from monitor import get_monitors
 
     monitors = get_monitors()
+    sequencer.check_reset(monitors)
     results: dict[str, str] = {}
 
     t_total = time.perf_counter()
@@ -141,11 +180,11 @@ def _apply_random_impl(
                 landscape_folder if mon.orientation.startswith("横")
                 else portrait_folder
             )
-            images = cache.get(folder)
+            images = sorted(cache.get(folder))
             if not images:
                 results[device_path] = f"[SKIP] 画像なし: {folder}"
                 continue
-            chosen = random.choice(images)
+            chosen = sequencer.next_image(mon.index, images)
             t = time.perf_counter()
             dwp.SetWallpaper(device_path, os.path.normpath(chosen))
             logger.debug(
@@ -164,12 +203,61 @@ def _apply_random_impl(
     return results
 
 
+def _apply_next_single_impl(
+    dwp: _IDesktopWallpaper,
+    cache: _ImageCache,
+    monitor_index: int,
+    landscape_folder: str,
+    portrait_folder: str,
+) -> dict[str, str]:
+    """
+    指定 index のモニター1台だけをランダムに選んだ画像に変更する。
+    画像ゼロの場合は SKIP。
+    """
+    from monitor import get_monitors
+
+    monitors = get_monitors()
+    results: dict[str, str] = {}
+
+    target = next((m for m in monitors if m.index == monitor_index), None)
+    if target is None:
+        return {f"monitor[{monitor_index}]": "[ERROR] not found"}
+
+    try:
+        device_path = dwp.GetMonitorDevicePathAt(target.index)
+        folder = (
+            landscape_folder if target.orientation.startswith("横")
+            else portrait_folder
+        )
+        images = cache.get(folder)
+        if not images:
+            return {device_path: f"[SKIP] 画像なし: {folder}"}
+        chosen = random.choice(images)
+        t = time.perf_counter()
+        dwp.SetWallpaper(device_path, os.path.normpath(chosen))
+        logger.debug(
+            f"[Wallpaper] SetWallpaper[{target.index}] {time.perf_counter() - t:.3f}s"
+            f" → {os.path.basename(chosen)}"
+        )
+        results[device_path] = chosen
+    except comtypes.COMError as e:
+        results[f"monitor[{monitor_index}]"] = (
+            f"[COM ERROR] 0x{e.hresult & 0xFFFFFFFF:08X} {e.text}"
+        )
+    except Exception as e:
+        results[f"monitor[{monitor_index}]"] = f"[ERROR] {e}"
+
+    return results
+
+
 # ── 壁紙ワーカースレッド ───────────────────────────────────────
 
 # リクエスト種別
-_REQ_APPLY   = "apply"
-_REQ_SINGLE  = "single"
-_REQ_SHUTDOWN = "shutdown"
+_REQ_APPLY            = "apply"
+_REQ_SINGLE           = "single"
+_REQ_NEXT_SINGLE      = "next_single"
+_REQ_NEXT_ALL         = "next_all"
+_REQ_SHUTDOWN         = "shutdown"
 _REQ_INVALIDATE_CACHE = "invalidate_cache"
 
 
@@ -192,6 +280,7 @@ class WallpaperWorker:
         self._queue: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
         self._cache = _ImageCache()
+        self._sequencer = _WallpaperSequencer()
 
     def start(self) -> None:
         """ワーカースレッドを開始する。"""
@@ -248,9 +337,42 @@ class WallpaperWorker:
         """指定デバイスパスのモニターに壁紙を設定するリクエストを投入する。"""
         self._queue.put((_REQ_SINGLE, (device_path, file_path), None))
 
+    def submit_next_single(
+        self,
+        monitor_index: int,
+        landscape_folder: str,
+        portrait_folder: str,
+        callback=None,
+    ) -> None:
+        """「次の壁紙へ → 1枚ずつ」: 指定モニター1台のみランダムに変更する。"""
+        self._queue.put((
+            _REQ_NEXT_SINGLE,
+            (monitor_index, landscape_folder, portrait_folder),
+            callback,
+        ))
+
+    def submit_next_all(
+        self,
+        landscape_folder: str,
+        portrait_folder: str,
+        callback=None,
+    ) -> None:
+        """「次の壁紙へ → 全部」: 全モニターを次の画像に変更する。"""
+        self._queue.put((_REQ_NEXT_ALL, (landscape_folder, portrait_folder), callback))
+
     def invalidate_cache(self) -> None:
         """画像キャッシュを全クリアする（設定保存時に呼ぶ）。"""
         self._queue.put((_REQ_INVALIDATE_CACHE, None, None))
+
+    @staticmethod
+    def _log_results(results: dict) -> None:
+        for dev, path in results.items():
+            if path.startswith("[SKIP]"):
+                logger.info(f"  SKIP {dev}: {path}")
+            elif path.startswith("["):
+                logger.warning(f"  {dev} → {path}")
+            else:
+                logger.info(f"  {dev} → {os.path.basename(path)}")
 
     # ── ワーカースレッド本体 ─────────────────────────────────
 
@@ -283,8 +405,8 @@ class WallpaperWorker:
                 if req_type == _REQ_APPLY:
                     land, port = args
                     try:
-                        results = _apply_random_impl(
-                            dwp, self._cache, land, port
+                        results = _apply_sequential_impl(
+                            dwp, self._cache, self._sequencer, land, port
                         )
                         if callback:
                             try:
@@ -296,6 +418,44 @@ class WallpaperWorker:
                     except Exception as e:
                         logger.error(
                             f"[WallpaperWorker] 壁紙適用エラー: {e}"
+                        )
+
+                elif req_type == _REQ_NEXT_ALL:
+                    land, port = args
+                    try:
+                        results = _apply_sequential_impl(
+                            dwp, self._cache, self._sequencer, land, port
+                        )
+                        self._log_results(results)
+                        if callback:
+                            try:
+                                callback(results)
+                            except Exception as e:
+                                logger.error(
+                                    f"[WallpaperWorker] next_all callback エラー: {e}"
+                                )
+                    except Exception as e:
+                        logger.error(
+                            f"[WallpaperWorker] next_all エラー: {e}"
+                        )
+
+                elif req_type == _REQ_NEXT_SINGLE:
+                    mon_idx, land, port = args
+                    try:
+                        results = _apply_next_single_impl(
+                            dwp, self._cache, mon_idx, land, port
+                        )
+                        self._log_results(results)
+                        if callback:
+                            try:
+                                callback(results)
+                            except Exception as e:
+                                logger.error(
+                                    f"[WallpaperWorker] next_single callback エラー: {e}"
+                                )
+                    except Exception as e:
+                        logger.error(
+                            f"[WallpaperWorker] next_single エラー: {e}"
                         )
 
                 elif req_type == _REQ_SINGLE:

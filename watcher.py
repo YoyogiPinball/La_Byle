@@ -28,11 +28,12 @@ from monitor import get_monitors, MonitorInfo, orientations_changed
 logger = logging.getLogger("la_byle")
 
 # ── Windows 定数 ──────────────────────────────────────────────
-_WM_DISPLAYCHANGE = 0x007E
-_WM_QUIT          = 0x0012
-_HWND_MESSAGE     = ctypes.wintypes.HWND(-3)  # メッセージ専用ウィンドウの親
-_CS_HREDRAW       = 0x0002
-_CS_VREDRAW       = 0x0001
+_WM_DISPLAYCHANGE  = 0x007E
+_WM_QUIT           = 0x0012
+_WS_EX_TOOLWINDOW  = 0x00000080  # タスクバーに表示しない
+_WS_POPUP          = 0x80000000  # タイトルバーなし
+_CS_HREDRAW        = 0x0002
+_CS_VREDRAW        = 0x0001
 
 # ── Win32 構造体 ──────────────────────────────────────────────
 _LRESULT = ctypes.wintypes.LPARAM
@@ -155,15 +156,16 @@ class OrientationWatcher:
             return
 
         # ── 隠しウィンドウ作成 ──
-        # HWND_MESSAGE 親にすることで画面に表示されず、
-        # ブロードキャストメッセージ（WM_DISPLAYCHANGE）を受信できる
+        # 親を NULL（トップレベル）にすることで WM_DISPLAYCHANGE ブロードキャストを受信できる。
+        # HWND_MESSAGE 親のメッセージ専用ウィンドウはブロードキャストを受信しないため使用しない。
+        # WS_EX_TOOLWINDOW でタスクバーに表示されない。サイズ 0x0 で画面にも表示されない。
         self._hwnd = user32.CreateWindowExW(
-            0,                     # dwExStyle
+            _WS_EX_TOOLWINDOW,     # dwExStyle: タスクバー非表示
             self._CLASS_NAME,      # lpClassName
             "LaByle_Watcher",      # lpWindowName
-            0,                     # dwStyle
-            0, 0, 0, 0,           # x, y, width, height
-            _HWND_MESSAGE,         # hWndParent
+            _WS_POPUP,             # dwStyle: タイトルバーなし
+            0, 0, 0, 0,            # x, y, width, height
+            None,                  # hWndParent: NULL → トップレベル
             None,                  # hMenu
             hInstance,             # hInstance
             None,                  # lpParam
