@@ -143,6 +143,11 @@ class AppController:
         # スケジューラ
         self._start_scheduler()
 
+        # 起動時変更
+        if self._cfg.get("change_on_startup"):
+            logger.info("起動時変更: 壁紙を変更します")
+            self._apply_wallpaper()
+
         # 向き変化監視
         if self._cfg.get("auto_reapply_on_orientation_change"):
             self._watcher.start()
@@ -153,6 +158,9 @@ class AppController:
         logger.info("La_Byle 終了")
 
     def _start_scheduler(self) -> None:
+        if not self._cfg.get("auto_change_enabled", True):
+            logger.info("スケジューラ: 無効（自動変更OFF）")
+            return
         interval = config.interval_seconds(self._cfg)
         self._scheduler.start(interval, self._apply_wallpaper)
         logger.info(f"スケジューラ: {interval}秒間隔")

@@ -26,6 +26,8 @@ DEFAULTS: dict = {
     "mode":             "random",
     "auto_reapply_on_orientation_change": True,
     "auto_start":       True,
+    "auto_change_enabled": True,
+    "change_on_startup":   False,
 }
 
 

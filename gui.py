@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 gui.py — La_Byle メインGUI (customtkinter)
-1ページ構成。ディスプレイ一覧は折りたたみ可能（デフォルト閉）。
+1ページ構成。
 ログエリアなし: デバッグ出力は --debug 引数でコンソールに流す。
 """
 
@@ -27,55 +27,6 @@ def _sep(parent) -> None:
         fill="x", padx=10, pady=(8, 4))
 
 
-# ── 折りたたみセクション ────────────────────────────────────────
-class _Collapsible:
-    """
-    タイトルボタンをクリックで内容を展開/折りたたみするコンポーネント。
-    content frame はタイトルボタンと同じ outer frame 内に配置することで、
-    展開時に必ずタイトルの「真下」に表示される。
-    """
-
-    def __init__(self, parent, title: str, folded: bool = True) -> None:
-        self._folded = folded
-        self._title  = title
-
-        # outer に button と content を両方入れる → 展開位置が常にタイトル直下
-        self._outer = ctk.CTkFrame(parent, fg_color="transparent")
-        self._outer.pack(fill="x", padx=0, pady=0)
-
-        self._btn = ctk.CTkButton(
-            self._outer,
-            text=self._label(),
-            anchor="w",
-            height=28,
-            font=_f(13, "bold"),
-            fg_color="transparent",
-            hover_color=SEP_COLOR,
-            text_color=["gray14", "gray84"],
-            command=self._toggle,
-        )
-        self._btn.pack(fill="x", padx=0, pady=(4, 0))
-
-        ctk.CTkFrame(self._outer, height=1, fg_color=SEP_COLOR).pack(
-            fill="x", padx=4, pady=(0, 4))
-
-        # content frame を outer 内に配置
-        self.frame = ctk.CTkFrame(self._outer, fg_color="transparent")
-        if not folded:
-            self.frame.pack(fill="x", padx=0)
-
-    def _label(self) -> str:
-        return f"  {'▶' if self._folded else '▼'}  {self._title}"
-
-    def _toggle(self) -> None:
-        self._folded = not self._folded
-        self._btn.configure(text=self._label())
-        if self._folded:
-            self.frame.pack_forget()
-        else:
-            self.frame.pack(fill="x", padx=0)
-
-
 # ── メインウィンドウ ───────────────────────────────────────────
 class LaByleWindow:
     def __init__(
@@ -97,7 +48,7 @@ class LaByleWindow:
 
         self.root = ctk.CTk()
         self.root.title("La_Byle")
-        self.root.geometry("540x400")
+        self.root.geometry("540x380")
         self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -121,8 +72,6 @@ class LaByleWindow:
     def _build_content(self) -> None:
         p = self.root
         self._folder_section(p)
-        self._interval_section(p)
-        self._monitor_section(p)   # デフォルト閉
         self._options_section(p)
         self._button_row(p)
 
@@ -141,89 +90,64 @@ class LaByleWindow:
                 fill="x", padx=14, pady=(10, 2))
             row = ctk.CTkFrame(p, fg_color="transparent")
             row.pack(fill="x", padx=14, pady=(0, 4))
-            
+
             # 入力欄を横幅いっぱい（expand=True, fill="x"）に広げる
             ctk.CTkEntry(row, textvariable=var, font=_f(12)).pack(
                 side="left", fill="x", expand=True, padx=(0, 6))
-            
+
             ctk.CTkButton(
                 row, text="参照", width=70, font=_f(12),
                 command=lambda v=var: self._browse(v),
             ).pack(side="left")
 
-    # ── 変更間隔 ──────────────────────────────────────────────
-    def _interval_section(self, p) -> None:
+    # ── オプション ────────────────────────────────────────────
+    def _options_section(self, p) -> None:
         _sep(p)
-        ctk.CTkLabel(p, text="変更間隔", anchor="w",
-                     font=_f(13, "bold")).pack(fill="x", padx=14, pady=(0, 2))
+
+        # 変更間隔の初期値
         minutes = int(self._cfg.get("interval_minutes", 360))
-        if minutes % 60 == 0:
+        if minutes % 1440 == 0:
+            init_val, init_unit = str(minutes // 1440), "日"
+        elif minutes % 60 == 0:
             init_val, init_unit = str(minutes // 60), "時間"
         else:
             init_val, init_unit = str(minutes), "分"
         self._interval_var = ctk.StringVar(value=init_val)
         self._unit_var     = ctk.StringVar(value=init_unit)
-        row = ctk.CTkFrame(p, fg_color="transparent")
-        row.pack(fill="x", padx=14, pady=(0, 6))
-        ctk.CTkEntry(row, textvariable=self._interval_var,
-                     width=70, font=_f(13)).pack(side="left", padx=(0, 6))
-        ctk.CTkOptionMenu(row, values=["分", "時間"],
-                          variable=self._unit_var,
-                          width=90, font=_f(13)).pack(side="left")
-        ctk.CTkLabel(row, text="  ごとに壁紙を変更",
-                     font=_f(12), anchor="w").pack(side="left")
 
-    # ── ディスプレイ一覧（折りたたみ・デフォルト閉） ─────────
-    def _monitor_section(self, p) -> None:
-        col = _Collapsible(p, "ディスプレイ一覧", folded=True)
-
-        self._monitor_frame = ctk.CTkFrame(col.frame)
-        self._monitor_frame.pack(fill="x", padx=14, pady=(0, 4))
-
-        for ci, (txt, w) in enumerate(
-            [("#", 28), ("名前", 160), ("解像度", 110), ("向き", 130)]
-        ):
-            ctk.CTkLabel(self._monitor_frame, text=txt, width=w, anchor="w",
-                         font=_f(12, "bold")).grid(
-                row=0, column=ci, padx=4, pady=3, sticky="w")
-
-        self.refresh_monitors()
-
-        ctk.CTkButton(
-            col.frame, text="ディスプレイ情報を再取得",
-            width=200, height=28, font=_f(12),
-            command=self.refresh_monitors,
-        ).pack(anchor="e", padx=14, pady=(2, 6))
-
-    def refresh_monitors(self) -> None:
-        from monitor import get_monitors
-        frame = self._monitor_frame
-        for w in frame.grid_slaves():
-            if int(w.grid_info()["row"]) > 0:
-                w.destroy()
-        monitors = get_monitors()
-        if not monitors:
-            ctk.CTkLabel(frame, text="（取得失敗）", font=_f(12)).grid(
-                row=1, column=0, columnspan=4, padx=4)
-            return
-        for mon in monitors:
-            r = mon.index + 1
-            for ci, (val, w) in enumerate(zip(
-                [str(r), mon.name, f"{mon.width}×{mon.height}", mon.orientation],
-                [28, 160, 110, 130],
-            )):
-                ctk.CTkLabel(frame, text=val, width=w, anchor="w",
-                             font=_f(12)).grid(
-                    row=r, column=ci, padx=4, pady=2, sticky="w")
-
-    # ── オプション ────────────────────────────────────────────
-    def _options_section(self, p) -> None:
-        _sep(p)
+        # BooleanVars
+        self._auto_change_var = ctk.BooleanVar(
+            value=self._cfg.get("auto_change_enabled", True))
+        self._change_on_startup_var = ctk.BooleanVar(
+            value=self._cfg.get("change_on_startup", False))
         self._auto_reapply_var = ctk.BooleanVar(
             value=self._cfg.get("auto_reapply_on_orientation_change", True))
         self._auto_start_var = ctk.BooleanVar(
             value=self._cfg.get("auto_start", True))
+
+        # 行1: 「自動変更を有効にする」チェックボックス + 変更間隔を同じ行に
+        row1 = ctk.CTkFrame(p, fg_color="transparent")
+        row1.pack(fill="x", padx=14, pady=(0, 4))
+
+        ctk.CTkCheckBox(row1, text="自動変更を有効にする",
+                        variable=self._auto_change_var,
+                        font=_f(13)).pack(side="left", padx=(4, 10))
+
+        self._interval_entry = ctk.CTkEntry(
+            row1, textvariable=self._interval_var, width=70, font=_f(13))
+        self._interval_entry.pack(side="left", padx=(0, 6))
+
+        self._unit_menu = ctk.CTkOptionMenu(
+            row1, values=["分", "時間", "日"],
+            variable=self._unit_var, width=90, font=_f(13))
+        self._unit_menu.pack(side="left")
+
+        ctk.CTkLabel(row1, text="  ごとに変更",
+                     font=_f(12), anchor="w").pack(side="left")
+
+        # 行2〜4: 残りのチェックボックス
         for text, var in [
+            ("このソフトを起動時に壁紙を変更する",    self._change_on_startup_var),
             ("モニター向き変更時に自動で壁紙を再適用", self._auto_reapply_var),
             ("Windows起動時に自動で開始",             self._auto_start_var),
         ]:
@@ -231,24 +155,32 @@ class LaByleWindow:
                             font=_f(13)).pack(
                 anchor="w", padx=18, pady=(0, 4))
 
+        # 「自動変更」チェック連動: 変更間隔ウィジェットの有効/無効
+        self._auto_change_var.trace_add("write", self._on_auto_change_toggle)
+        self._on_auto_change_toggle()  # 初期状態を反映
+
+    def _on_auto_change_toggle(self, *_) -> None:
+        state = "normal" if self._auto_change_var.get() else "disabled"
+        self._interval_entry.configure(state=state)
+        self._unit_menu.configure(state=state)
+
     # ── ボタン行 ──────────────────────────────────────────────
     def _button_row(self, p) -> None:
         _sep(p)
         row = ctk.CTkFrame(p, fg_color="transparent")
         row.pack(fill="x", padx=14, pady=(0, 6))
-        
+
         # 左右のボタンがそれぞれ半分の領域（expand=True）を持ち、横幅いっぱいに広がるようにする
         self._apply_btn = ctk.CTkButton(
             row, text="▶  次へ", font=_f(13),
             command=self._apply_now, height=36
         )
         self._apply_btn.pack(side="left", expand=True, fill="x", padx=(0, 6))
-        
+
         ctk.CTkButton(
             row, text="💾  保存", font=_f(13),
             command=self._save, height=36
         ).pack(side="left", expand=True, fill="x", padx=(6, 0))
-
 
     def set_apply_enabled(self, enabled: bool) -> None:
         """「次へ」ボタンの有効/無効を切り替える（処理中ロック用）。"""
@@ -266,12 +198,19 @@ class LaByleWindow:
             val = int(self._interval_var.get())
         except ValueError:
             val = config.DEFAULTS["interval_minutes"]
-        minutes = val if unit == "分" else val * 60
+        if unit == "分":
+            minutes = val
+        elif unit == "時間":
+            minutes = val * 60
+        else:  # 日
+            minutes = val * 1440
         return {
             "landscape_folder": self._landscape_var.get(),
             "portrait_folder":  self._portrait_var.get(),
             "interval_minutes": minutes,
             "mode":             "random",
+            "auto_change_enabled": self._auto_change_var.get(),
+            "change_on_startup":   self._change_on_startup_var.get(),
             "auto_reapply_on_orientation_change": self._auto_reapply_var.get(),
             "auto_start":       self._auto_start_var.get(),
         }
