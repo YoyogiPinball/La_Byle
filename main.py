@@ -127,9 +127,11 @@ class AppController:
 
         # GUI 生成
         self._window = LaByleWindow(
-            cfg          = self._cfg,
-            on_save      = self._on_save,
-            on_apply_now = self._on_apply_now,
+            cfg              = self._cfg,
+            on_save          = self._on_save,
+            on_apply_now     = self._on_apply_now,
+            on_apply_all     = self._on_apply_all,
+            on_apply_monitor = self._on_apply_monitor,
         )
 
         # トレイ
@@ -197,7 +199,7 @@ class AppController:
 
     def _on_apply_now(self, cfg: dict) -> None:
         """
-        GUI「次へ」→ カーソル位置のモニター1台をランダムに変更し、カーソルを進める。
+        GUI「１枚変更」→ カーソル位置のモニター1台をランダムに変更し、カーソルを進める。
         保存は行わない。完了後にボタンを再有効化する。
         """
         from monitor import get_monitors
@@ -216,6 +218,28 @@ class AppController:
             self._worker.submit_next_single(idx, land, port, callback=_re_enable)
         else:
             self._worker.submit_next_single(idx, land, port)
+
+    def _on_apply_all(self, cfg: dict) -> None:
+        """GUI「全部変更」→ 全モニターを一括でランダム変更する。完了後にボタンを再有効化する。"""
+        land = cfg.get("landscape_folder", "")
+        port = cfg.get("portrait_folder",  "")
+        if self._window:
+            def _re_enable(_results=None):
+                self._window.root.after(0, self._window.set_apply_all_enabled, True)
+            self._worker.submit_next_all(land, port, callback=_re_enable)
+        else:
+            self._worker.submit_next_all(land, port)
+
+    def _on_apply_monitor(self, cfg: dict, monitor_index: int) -> None:
+        """GUI「このモニターを変更」→ 指定モニターをランダム変更する。完了後にボタンを再有効化する。"""
+        land = cfg.get("landscape_folder", "")
+        port = cfg.get("portrait_folder",  "")
+        if self._window:
+            def _re_enable(_results=None):
+                self._window.root.after(0, self._window.set_monitor_btn_enabled, True)
+            self._worker.submit_next_single(monitor_index, land, port, callback=_re_enable)
+        else:
+            self._worker.submit_next_single(monitor_index, land, port)
 
     def _on_orientation_change(self) -> None:
         """watcher から向き変化通知 → 即時壁紙変更。"""

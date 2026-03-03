@@ -32,12 +32,16 @@ class LaByleWindow:
     def __init__(
         self,
         cfg: dict,
-        on_save:      Callable,
-        on_apply_now: Callable,
+        on_save:          Callable,
+        on_apply_now:     Callable,
+        on_apply_all:     Callable,
+        on_apply_monitor: Callable,
     ) -> None:
-        self._cfg          = cfg
-        self._on_save      = on_save
-        self._on_apply_now = on_apply_now
+        self._cfg              = cfg
+        self._on_save          = on_save
+        self._on_apply_now     = on_apply_now
+        self._on_apply_all     = on_apply_all
+        self._on_apply_monitor = on_apply_monitor
         self._build_root()
         self._build_content()
 
@@ -48,7 +52,7 @@ class LaByleWindow:
 
         self.root = ctk.CTk()
         self.root.title("La_Byle")
-        self.root.geometry("540x380")
+        self.root.geometry("540x440")
         self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -74,6 +78,7 @@ class LaByleWindow:
         self._folder_section(p)
         self._options_section(p)
         self._button_row(p)
+        self._monitor_section(p)
 
     # ── フォルダー設定 ────────────────────────────────────────
     def _folder_section(self, p) -> None:
@@ -170,21 +175,64 @@ class LaByleWindow:
         row = ctk.CTkFrame(p, fg_color="transparent")
         row.pack(fill="x", padx=14, pady=(0, 6))
 
-        # 左右のボタンがそれぞれ半分の領域（expand=True）を持ち、横幅いっぱいに広がるようにする
         self._apply_btn = ctk.CTkButton(
-            row, text="▶  次へ", font=_f(13),
+            row, text="▶  １枚変更", font=_f(13),
             command=self._apply_now, height=36
         )
-        self._apply_btn.pack(side="left", expand=True, fill="x", padx=(0, 6))
+        self._apply_btn.pack(side="left", expand=True, fill="x", padx=(0, 4))
+
+        self._apply_all_btn = ctk.CTkButton(
+            row, text="全部変更", font=_f(13),
+            command=self._apply_all, height=36
+        )
+        self._apply_all_btn.pack(side="left", expand=True, fill="x", padx=(0, 4))
 
         ctk.CTkButton(
-            row, text="💾  保存", font=_f(13),
+            row, text="💾  設定保存", font=_f(13),
             command=self._save, height=36
-        ).pack(side="left", expand=True, fill="x", padx=(6, 0))
+        ).pack(side="left", expand=True, fill="x")
 
     def set_apply_enabled(self, enabled: bool) -> None:
-        """「次へ」ボタンの有効/無効を切り替える（処理中ロック用）。"""
+        """「１枚変更」ボタンの有効/無効を切り替える（処理中ロック用）。"""
         self._apply_btn.configure(state="normal" if enabled else "disabled")
+
+    def set_apply_all_enabled(self, enabled: bool) -> None:
+        """「全部変更」ボタンの有効/無効を切り替える（処理中ロック用）。"""
+        self._apply_all_btn.configure(state="normal" if enabled else "disabled")
+
+    def set_monitor_btn_enabled(self, enabled: bool) -> None:
+        """「このモニターを変更」ボタンの有効/無効を切り替える（処理中ロック用）。"""
+        self._monitor_btn.configure(state="normal" if enabled else "disabled")
+
+    # ── モニター個別変更 ──────────────────────────────────────
+    def _monitor_section(self, p) -> None:
+        from monitor import get_monitors
+        monitors = get_monitors()
+
+        _sep(p)
+        row = ctk.CTkFrame(p, fg_color="transparent")
+        row.pack(fill="x", padx=14, pady=(0, 8))
+
+        if monitors:
+            options = [f"モニター {m.index}  ({m.orientation})" for m in monitors]
+            self._monitor_index_map = {
+                f"モニター {m.index}  ({m.orientation})": m.index for m in monitors
+            }
+        else:
+            options = ["（モニターなし）"]
+            self._monitor_index_map = {}
+
+        self._monitor_var = ctk.StringVar(value=options[0])
+        ctk.CTkOptionMenu(
+            row, values=options,
+            variable=self._monitor_var, width=200, font=_f(13),
+        ).pack(side="left", padx=(0, 8))
+
+        self._monitor_btn = ctk.CTkButton(
+            row, text="このモニターを変更", font=_f(13), height=36,
+            command=self._apply_monitor,
+        )
+        self._monitor_btn.pack(side="left", expand=True, fill="x")
 
     # ── ロジック ─────────────────────────────────────────────
     def _browse(self, var: ctk.StringVar) -> None:
@@ -216,8 +264,19 @@ class LaByleWindow:
         }
 
     def _apply_now(self) -> None:
-        self.set_apply_enabled(False)   # 処理開始時に無効化
+        self.set_apply_enabled(False)
         self._on_apply_now(self._collect_cfg())
+
+    def _apply_all(self) -> None:
+        self.set_apply_all_enabled(False)
+        self._on_apply_all(self._collect_cfg())
+
+    def _apply_monitor(self) -> None:
+        idx = self._monitor_index_map.get(self._monitor_var.get())
+        if idx is None:
+            return
+        self.set_monitor_btn_enabled(False)
+        self._on_apply_monitor(self._collect_cfg(), idx)
 
     def _save(self) -> None:
         self._on_save(self._collect_cfg())
