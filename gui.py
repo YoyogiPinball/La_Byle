@@ -33,13 +33,11 @@ class LaByleWindow:
         self,
         cfg: dict,
         on_save:          Callable,
-        on_apply_now:     Callable,
         on_apply_all:     Callable,
         on_apply_monitor: Callable,
     ) -> None:
         self._cfg              = cfg
         self._on_save          = on_save
-        self._on_apply_now     = on_apply_now
         self._on_apply_all     = on_apply_all
         self._on_apply_monitor = on_apply_monitor
         self._build_root()
@@ -152,7 +150,7 @@ class LaByleWindow:
 
         # 行2〜4: 残りのチェックボックス
         for text, var in [
-            ("このソフトを起動時に壁紙を変更する",    self._change_on_startup_var),
+            ("このソフトを起動時に壁紙を全て変更する", self._change_on_startup_var),
             ("モニター向き変更時に自動で壁紙を再適用", self._auto_reapply_var),
             ("Windows起動時に自動で開始",             self._auto_start_var),
         ]:
@@ -175,14 +173,8 @@ class LaByleWindow:
         row = ctk.CTkFrame(p, fg_color="transparent")
         row.pack(fill="x", padx=14, pady=(0, 6))
 
-        self._apply_btn = ctk.CTkButton(
-            row, text="▶  １枚変更", font=_f(13),
-            command=self._apply_now, height=36
-        )
-        self._apply_btn.pack(side="left", expand=True, fill="x", padx=(0, 4))
-
         self._apply_all_btn = ctk.CTkButton(
-            row, text="全部変更", font=_f(13),
+            row, text="▶  全部変更", font=_f(13),
             command=self._apply_all, height=36
         )
         self._apply_all_btn.pack(side="left", expand=True, fill="x", padx=(0, 4))
@@ -191,10 +183,6 @@ class LaByleWindow:
             row, text="💾  設定保存", font=_f(13),
             command=self._save, height=36
         ).pack(side="left", expand=True, fill="x")
-
-    def set_apply_enabled(self, enabled: bool) -> None:
-        """「１枚変更」ボタンの有効/無効を切り替える（処理中ロック用）。"""
-        self._apply_btn.configure(state="normal" if enabled else "disabled")
 
     def set_apply_all_enabled(self, enabled: bool) -> None:
         """「全部変更」ボタンの有効/無効を切り替える（処理中ロック用）。"""
@@ -262,10 +250,6 @@ class LaByleWindow:
             "auto_reapply_on_orientation_change": self._auto_reapply_var.get(),
             "auto_start":       self._auto_start_var.get(),
         }
-
-    def _apply_now(self) -> None:
-        self.set_apply_enabled(False)
-        self._on_apply_now(self._collect_cfg())
 
     def _apply_all(self) -> None:
         self.set_apply_all_enabled(False)

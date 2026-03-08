@@ -143,10 +143,14 @@ class _WallpaperSequencer:
         """
         images（ソート済み前提）から次の1枚を返しカウンターを進める。
         images が空の場合は空文字列を返す。
+        初回はランダムなオフセットからスタートし、同フォルダを共有する
+        複数モニターが同じ画像を選び続けるのを防ぐ。
         """
         if not images:
             return ""
-        idx = self._counters.get(monitor_index, 0) % len(images)
+        if monitor_index not in self._counters:
+            self._counters[monitor_index] = random.randrange(len(images))
+        idx = self._counters[monitor_index] % len(images)
         self._counters[monitor_index] = idx + 1
         return images[idx]
 

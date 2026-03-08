@@ -110,7 +110,7 @@ class AppController:
         self._watcher   = OrientationWatcher(on_change=self._on_orientation_change)
         self._window:         LaByleWindow | None = None
         self._tray:           TrayIcon     | None = None
-        self._monitor_cursor: int = 0  # GUI「次へ」で担当するモニターのカーソル
+        self._monitor_cursor: int = 0  # スケジューラ・向き変更時のモニターカーソル
 
     # ── 起動 ─────────────────────────────────────────────────
 
@@ -129,7 +129,6 @@ class AppController:
         self._window = LaByleWindow(
             cfg              = self._cfg,
             on_save          = self._on_save,
-            on_apply_now     = self._on_apply_now,
             on_apply_all     = self._on_apply_all,
             on_apply_monitor = self._on_apply_monitor,
         )
@@ -145,10 +144,12 @@ class AppController:
         # スケジューラ
         self._start_scheduler()
 
-        # 起動時変更
+        # 起動時変更（全モニター一括）
         if self._cfg.get("change_on_startup"):
-            logger.info("起動時変更: 壁紙を変更します")
-            self._apply_wallpaper()
+            logger.info("起動時変更: 全モニターの壁紙を変更します")
+            land = self._cfg.get("landscape_folder", "")
+            port = self._cfg.get("portrait_folder", "")
+            self._worker.submit_next_all(land, port)
 
         # 向き変化監視
         if self._cfg.get("auto_reapply_on_orientation_change"):
@@ -196,28 +197,6 @@ class AppController:
             self._watcher.start()
         else:
             self._watcher.stop()
-
-    def _on_apply_now(self, cfg: dict) -> None:
-        """
-        GUI「１枚変更」→ カーソル位置のモニター1台をランダムに変更し、カーソルを進める。
-        保存は行わない。完了後にボタンを再有効化する。
-        """
-        from monitor import get_monitors
-        monitors = get_monitors()
-        if not monitors:
-            if self._window:
-                self._window.set_apply_enabled(True)
-            return
-        idx = self._monitor_cursor % len(monitors)
-        self._monitor_cursor += 1
-        land = cfg.get("landscape_folder", "")
-        port = cfg.get("portrait_folder",  "")
-        if self._window:
-            def _re_enable(_results=None):
-                self._window.root.after(0, self._window.set_apply_enabled, True)
-            self._worker.submit_next_single(idx, land, port, callback=_re_enable)
-        else:
-            self._worker.submit_next_single(idx, land, port)
 
     def _on_apply_all(self, cfg: dict) -> None:
         """GUI「全部変更」→ 全モニターを一括でランダム変更する。完了後にボタンを再有効化する。"""
