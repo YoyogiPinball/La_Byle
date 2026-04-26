@@ -27,6 +27,16 @@ def _sep(parent) -> None:
         fill="x", padx=10, pady=(8, 4))
 
 
+def _is_valid_hhmm(s: str) -> bool:
+    """'HH:MM' 形式かつ 00:00〜23:59 の範囲内ならTrue。"""
+    try:
+        hh, mm = s.split(":")
+        h, m = int(hh), int(mm)
+        return 0 <= h <= 23 and 0 <= m <= 59
+    except (ValueError, AttributeError):
+        return False
+
+
 # ── メインウィンドウ ───────────────────────────────────────────
 class LaByleWindow:
     def __init__(
@@ -117,6 +127,10 @@ class LaByleWindow:
             init_val, init_unit = str(minutes), "分"
         self._interval_var = ctk.StringVar(value=init_val)
         self._unit_var     = ctk.StringVar(value=init_unit)
+        self._daily_time_var = ctk.StringVar(
+            value=self._cfg.get("daily_time", "09:00"))
+        self._schedule_mode_var = ctk.StringVar(
+            value=self._cfg.get("schedule_mode", "interval"))
 
         # BooleanVars
         self._auto_change_var = ctk.BooleanVar(
@@ -128,27 +142,50 @@ class LaByleWindow:
         self._auto_start_var = ctk.BooleanVar(
             value=self._cfg.get("auto_start", True))
 
-        # 行1: 「自動変更を有効にする」チェックボックス + 変更間隔を同じ行に
+        # 行1: 「自動変更を有効にする」チェックボックス
         row1 = ctk.CTkFrame(p, fg_color="transparent")
         row1.pack(fill="x", padx=14, pady=(0, 4))
-
         ctk.CTkCheckBox(row1, text="自動変更を有効にする",
                         variable=self._auto_change_var,
                         font=_f(13)).pack(side="left", padx=(4, 10))
 
+        # 行2: 間隔指定モード
+        row_interval = ctk.CTkFrame(p, fg_color="transparent")
+        row_interval.pack(fill="x", padx=14, pady=(0, 2))
+        self._mode_interval_radio = ctk.CTkRadioButton(
+            row_interval, text="間隔",
+            variable=self._schedule_mode_var, value="interval",
+            font=_f(13), width=60)
+        self._mode_interval_radio.pack(side="left", padx=(18, 8))
         self._interval_entry = ctk.CTkEntry(
-            row1, textvariable=self._interval_var, width=70, font=_f(13))
+            row_interval, textvariable=self._interval_var,
+            width=60, font=_f(13))
         self._interval_entry.pack(side="left", padx=(0, 6))
-
         self._unit_menu = ctk.CTkOptionMenu(
-            row1, values=["分", "時間", "日"],
-            variable=self._unit_var, width=90, font=_f(13))
+            row_interval, values=["分", "時間", "日"],
+            variable=self._unit_var, width=80, font=_f(13))
         self._unit_menu.pack(side="left")
-
-        ctk.CTkLabel(row1, text="  ごとに変更",
+        ctk.CTkLabel(row_interval, text="  ごとに変更",
                      font=_f(12), anchor="w").pack(side="left")
 
-        # 行2〜4: 残りのチェックボックス
+        # 行3: 時刻指定モード
+        row_time = ctk.CTkFrame(p, fg_color="transparent")
+        row_time.pack(fill="x", padx=14, pady=(0, 4))
+        self._mode_time_radio = ctk.CTkRadioButton(
+            row_time, text="時刻",
+            variable=self._schedule_mode_var, value="time",
+            font=_f(13), width=60)
+        self._mode_time_radio.pack(side="left", padx=(18, 8))
+        ctk.CTkLabel(row_time, text="毎日",
+                     font=_f(12)).pack(side="left", padx=(0, 4))
+        self._daily_time_entry = ctk.CTkEntry(
+            row_time, textvariable=self._daily_time_var,
+            width=70, font=_f(13), placeholder_text="HH:MM")
+        self._daily_time_entry.pack(side="left", padx=(0, 6))
+        ctk.CTkLabel(row_time, text="に変更",
+                     font=_f(12)).pack(side="left")
+
+        # 行4〜6: 残りのチェックボックス
         for text, var in [
             ("このソフトを起動時に壁紙を全て変更する", self._change_on_startup_var),
             ("モニター向き変更時に自動で壁紙を再適用", self._auto_reapply_var),
@@ -158,14 +195,27 @@ class LaByleWindow:
                             font=_f(13)).pack(
                 anchor="w", padx=18, pady=(0, 4))
 
-        # 「自動変更」チェック連動: 変更間隔ウィジェットの有効/無効
+        # 連動: 自動変更チェック → 全体 enable/disable
+        #       モードラジオ → 該当ウィジェットだけ active
         self._auto_change_var.trace_add("write", self._on_auto_change_toggle)
+        self._schedule_mode_var.trace_add("write", self._on_mode_change)
         self._on_auto_change_toggle()  # 初期状態を反映
 
     def _on_auto_change_toggle(self, *_) -> None:
-        state = "normal" if self._auto_change_var.get() else "disabled"
-        self._interval_entry.configure(state=state)
-        self._unit_menu.configure(state=state)
+        enabled = self._auto_change_var.get()
+        radio_state = "normal" if enabled else "disabled"
+        self._mode_interval_radio.configure(state=radio_state)
+        self._mode_time_radio.configure(state=radio_state)
+        self._on_mode_change()  # 入力欄の有効/無効を再評価
+
+    def _on_mode_change(self, *_) -> None:
+        auto_on = self._auto_change_var.get()
+        is_interval = (self._schedule_mode_var.get() == "interval")
+        interval_state = "normal" if (auto_on and is_interval) else "disabled"
+        time_state = "normal" if (auto_on and not is_interval) else "disabled"
+        self._interval_entry.configure(state=interval_state)
+        self._unit_menu.configure(state=interval_state)
+        self._daily_time_entry.configure(state=time_state)
 
     # ── ボタン行 ──────────────────────────────────────────────
     def _button_row(self, p) -> None:
@@ -240,6 +290,25 @@ class LaByleWindow:
             minutes = val * 60
         else:  # 日
             minutes = val * 1440
+
+        # 時刻のバリデーション（不正なら既存値→デフォルトの順でフォールバック）
+        daily_time = self._daily_time_var.get().strip()
+        if not _is_valid_hhmm(daily_time):
+            daily_time = self._cfg.get(
+                "daily_time", config.DEFAULTS["daily_time"])
+
+        # スケジュール関連が変わったら last_executed_date をリセット
+        # (ユーザーが時刻を変更した直後に「今日もう実行済み」で発火スキップされないように)
+        new_mode = self._schedule_mode_var.get()
+        old_mode = self._cfg.get("schedule_mode", "interval")
+        old_daily_time = self._cfg.get("daily_time", "")
+        schedule_changed = (
+            new_mode != old_mode
+            or (new_mode == "time" and daily_time != old_daily_time)
+        )
+        last_exec = "" if schedule_changed else self._cfg.get(
+            "last_executed_date", "")
+
         return {
             "landscape_folder": self._landscape_var.get(),
             "portrait_folder":  self._portrait_var.get(),
@@ -249,6 +318,9 @@ class LaByleWindow:
             "change_on_startup":   self._change_on_startup_var.get(),
             "auto_reapply_on_orientation_change": self._auto_reapply_var.get(),
             "auto_start":       self._auto_start_var.get(),
+            "schedule_mode":    new_mode,
+            "daily_time":       daily_time,
+            "last_executed_date": last_exec,
         }
 
     def _apply_all(self) -> None:

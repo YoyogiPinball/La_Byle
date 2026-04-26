@@ -28,6 +28,9 @@ DEFAULTS: dict = {
     "auto_start":       True,
     "auto_change_enabled": True,
     "change_on_startup":   False,
+    "schedule_mode":       "interval",   # "interval" or "time"
+    "daily_time":          "09:00",      # HH:MM (schedule_mode="time" のとき使用)
+    "last_executed_date":  "",           # YYYY-MM-DD (時刻指定モードのキャッチアップ判定用)
 }
 
 

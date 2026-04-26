@@ -164,16 +164,41 @@ class AppController:
         if not self._cfg.get("auto_change_enabled", True):
             logger.info("スケジューラ: 無効（自動変更OFF）")
             return
-        interval = config.interval_seconds(self._cfg)
-        self._scheduler.start(interval, self._apply_wallpaper)
-        logger.info(f"スケジューラ: {interval}秒間隔")
+
+        mode = self._cfg.get("schedule_mode", "interval")
+        if mode == "time":
+            daily_time = self._cfg.get("daily_time", "09:00")
+            self._scheduler.start_time_mode(
+                daily_time_hhmm=daily_time,
+                last_executed_date_getter=lambda: self._cfg.get(
+                    "last_executed_date", ""),
+                on_executed=self._on_time_executed,
+                callback=self._apply_wallpaper,
+            )
+            logger.info(f"スケジューラ: 時刻指定モード 毎日 {daily_time}")
+        else:
+            interval = config.interval_seconds(self._cfg)
+            self._scheduler.start(interval, self._apply_wallpaper)
+            logger.info(f"スケジューラ: 間隔モード {interval}秒")
+
+    def _on_time_executed(self, today_str: str) -> None:
+        """
+        時刻指定モードの発火後コールバック。
+        最終実行日を更新して config.json に保存する。
+        """
+        self._cfg["last_executed_date"] = today_str
+        config.save(self._cfg)
+        logger.info(f"[Controller] 最終実行日を更新: {today_str}")
 
     # ── コールバック ─────────────────────────────────────────
 
     def _on_save(self, cfg: dict) -> None:
         """GUI「保存」→ 設定を永続化・スケジューラ再起動・スタートアップ登録を更新。"""
-        self._cfg = cfg
-        config.save(cfg)
+        # in-place で更新する（GUI 側 self._cfg と参照を共有しているため、
+        # 再代入すると GUI 側が古い辞書を持ち続け、後続の保存で
+        # last_executed_date 等が古い値で上書きされる事故が起きる）
+        self._cfg.update(cfg)
+        config.save(self._cfg)
         logger.info("[Controller] 設定を保存")
 
         # 画像キャッシュをクリア（フォルダーが変更された可能性があるため）
